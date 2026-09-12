@@ -419,4 +419,21 @@ function calculateCEI(parsedData) {
     detail: {
       formula: 'CEI = L+S+M+SB+AV+N+D9+H+P - EL (each factor 0-10, EL is a 0-10 deduction), out of 90',
       components, EL, rawSum: Math.round(rawSum),
+      gradingBandsUsed: '80-90 Supreme Harmony | 70-79 Good Harmony | 60-69 Average Harmony | 50-59 Energy-Loss Effect | <50 Severe Imbalance'
+    }
+  };
+}
+
+module.exports = {
+  calculateCEI,
+  gradeCeiLpi,
+  RASHI_ORDER, ELEMENT_OF_RASHI, SIGN_LORD,
+  EXALTATION, DEBILITATION, OWN_SIGNS,
+  EXALTATION_DEGREE, DEBILITATION_DEGREE,
+  KENDRA_TRIKONA, DUSTHANA, NATURAL_BENEFICS, NATURAL_MALEFICS, ASPECT_OFFSETS,
+  AVG_SARVASHTAKVARGA_PER_SIGN,
+  clamp, rashiForHouse, houseOfPlanet, planetsAspectingHouse,
+  absoluteLongitude, isCombust, dignityEffect, dignityBonus,
+  navamshaRashi, computeNavamshaPositions
+};
     
