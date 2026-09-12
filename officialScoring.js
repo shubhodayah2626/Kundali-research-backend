@@ -294,7 +294,11 @@ function scoreAV(ashtakvarga, planetaryPositions) {
   return score;
 }
 
-const DEVA_GANA_NAKSHATRAS = ['Ashwini', 'Mrigashira', 'Punarvasu', 'Pushya', 'Hasta', 'Swati', 'Anuradha', 'Shravana', 'Revati'];
+const SEVERELY_INAUSPICIOUS_NAKSHATRAS = ['Ashlesha', 'Jyeshtha'];
+const NAKSHATRA_SPELLING_ALIASES = { Mool: 'Mula', Dhanistha: 'Dhanishta', Jyeshta: 'Jyeshtha' };
+function normalizeNakshatraName(name) {
+  return NAKSHATRA_SPELLING_ALIASES[name] || name;
+}
 const SHADOW_EXALTATION = { rahu: 'Gemini', ketu: 'Sagittarius' };
 const SHADOW_DEBILITATION = { rahu: 'Sagittarius', ketu: 'Gemini' };
 
@@ -323,8 +327,7 @@ function scoreN(shadbala, nakshatraLord, planetaryPositions, moonNakshatraName) 
     if (![...malefics].some(p => NATURAL_MALEFICS.includes(p))) score += 2;
   }
 
-  if (moonNakshatraName && DEVA_GANA_NAKSHATRAS.includes(moonNakshatraName)) score += 2;
-
+  if (moonNakshatraName && !SEVERELY_INAUSPICIOUS_NAKSHATRAS.includes(normalizeNakshatraName(moonNakshatraName))) score += 2;
   if (lordPos) {
     if (isGrahaLord) {
       if (EXALTATION[nakshatraLord] === lordPos.rashi || (OWN_SIGNS[nakshatraLord] || []).includes(lordPos.rashi)) score += 2;
