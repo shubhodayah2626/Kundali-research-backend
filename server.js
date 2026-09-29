@@ -13,6 +13,16 @@ const { CEI_CONTENT, LPI_CONTENT, COMPARISON_ROWS } = require('./reportContent')
 // to a `fonts/` folder at the repo root alongside server.js.
 const DEVANAGARI_FONT_PATH = path.join(__dirname, 'fonts', 'NotoSansDevanagari-Regular.ttf');
 
+// Shubhodayah logo (report cover) and small emblem (top-right of every
+// other page). Upload both PNGs to the repo's main folder, next to
+// server.js. If they are missing the report still generates, just
+// without the logo.
+const fs = require('fs');
+const REPORT_LOGO_PATH = path.join(__dirname, 'report-logo.png');
+const REPORT_EMBLEM_PATH = path.join(__dirname, 'report-emblem.png');
+const HAS_LOGO = fs.existsSync(REPORT_LOGO_PATH);
+const HAS_EMBLEM = fs.existsSync(REPORT_EMBLEM_PATH);
+
 dotenv.config();
 
 const app = express();
@@ -55,17 +65,20 @@ const GOLD = '#C49A45';
 const CREAM = '#FCF8E3';
 const INK = '#2A2A2A';
 
-// ==================== PDF GENERATION (24 pages: 12 CEI + 12 LPI, matching the reference documents) ====================
+// ==================== PDF GENERATION (2 CEI summary pages + 10 LPI pages + 1 final page) ====================
 
 const PAGE_LEFT = 40;
 const PAGE_WIDTH_CONTENT = 515; // A4 width 595.28 - 40 - 40 margins
 
 /** Page chrome: gold border + small footer credit line, matching the reference PDFs' look. */
-function drawPageChrome(doc) {
+function drawPageChrome(doc, { isCover = false } = {}) {
   doc.save();
   doc.lineWidth(1.5).strokeColor(GOLD)
     .rect(18, 18, doc.page.width - 36, doc.page.height - 36).stroke();
   doc.restore();
+  if (HAS_EMBLEM && !isCover) {
+    try { doc.image(REPORT_EMBLEM_PATH, doc.page.width - 26 - 36, 24, { width: 36 }); } catch (e) { /* no logo → no problem */ }
+  }
   // IMPORTANT: this must land well clear of the page's bottom margin
   // (margins.bottom = 30, so the printable area ends at page.height-30).
   // Too close and PDFKit's own overflow check silently opens a new
@@ -272,6 +285,244 @@ function renderConclusionPage(doc, content, summaryLine) {
   }
 }
 
+// ==================== SUMMARY-STYLE CEI + RANGE CHARTS ====================
+// The CEI section shows only the marks for each of the 9 pillars (bar
+// chart + table), the solved formula, the final score and its range —
+// NOT the rule-by-rule working, so the scoring method can't be copied.
+// CEI and LPI each get their own 8-range classification chart, so every
+// combination of scores is explained (the old combined CEI/LPI matrix
+// only worked when both scores fell in the same range).
+
+const CEI_FACTOR_NAMES = {
+  L: 'लग्न', S: 'सूर्य', M: 'चंद्र', SB: 'षड्बल', AV: 'अष्टकवर्ग',
+  N: 'नक्षत्र', D9: 'नवांश', H: 'शरीर एवं 12 भाव', P: 'पंचमहाभूत'
+};
+const BAND_COLORS = ['#2E7D32', '#558B2F', '#9E9D24', '#C49A45', '#E08A3C', '#D35400', '#B03A2E', '#8E1B1B'];
+const BAND_RANGES = [['80 – 90', 80, 90], ['70 – 79', 70, 79], ['60 – 69', 60, 69], ['50 – 59', 50, 59],
+                     ['40 – 49', 40, 49], ['30 – 39', 30, 39], ['20 – 29', 20, 29], ['20 से कम', -999, 19]];
+const CEI_BANDS = [
+  ['सर्वोच्च ब्रह्माण्डीय ऊर्जा', 'जन्म कुंडली ब्रह्माण्डीय ऊर्जा के साथ अत्यंत सुदृढ़ रूप से संरेखित है। प्राणिक ऊर्जा का प्रवाह उच्चतम स्तर पर है।'],
+  ['उत्तम ऊर्जा', 'ऊर्जा संरचना मजबूत और संतुलित है। छोटे-मोटे अवरोध सहज रूप से दूर हो जाते हैं।'],
+  ['अच्छी ऊर्जा', 'ऊर्जा का आधार अच्छा है। कुछ स्तंभों को सुदृढ़ करने से और बेहतर परिणाम संभव हैं।'],
+  ['ऊर्जा ह्रास का प्रभाव', 'ऊर्जा मध्यम स्तर पर है। कुछ क्षेत्रों में ऊर्जा का क्षय दिखाई देता है, जिसके लिए संतुलन के उपाय सहायक होंगे।'],
+  ['कमजोर ऊर्जा', 'कई ऊर्जा स्तंभ कमजोर हैं। थकान, अवरोध और अस्थिरता संभव है; नियमित साधना और उपाय आवश्यक हैं।'],
+  ['अल्प ऊर्जा', 'ब्रह्माण्डीय ऊर्जा को ग्रहण करने की क्षमता कम है। उपचारात्मक उपाय और ऊर्जा हीलिंग की आवश्यकता है।'],
+  ['गंभीर ऊर्जा अवरोध', 'आंतरिक प्राणशक्ति में गहरा अवरोध है। शीघ्र ऊर्जा हीलिंग और विशेषज्ञ परामर्श की आवश्यकता है।'],
+  ['अत्यंत गंभीर असंतुलन', 'ऊर्जा तंत्र गंभीर रूप से असंतुलित है। तत्काल ऊर्जा हीलिंग और उपचारात्मक उपाय अनिवार्य हैं।']
+];
+const LPI_BANDS = [
+  ['उत्कृष्ट जीवन निष्पादन', 'जीवन के लगभग सभी आयामों — स्वास्थ्य, धन, करियर, संबंध और अध्यात्म — में उत्कृष्ट संतुलन और सफलता है।'],
+  ['बहुत अच्छा जीवन निष्पादन', 'अधिकांश आयामों में सफलता और संतुलन है। कुछ क्षेत्रों में थोड़ा सुधार जीवन को पूर्णता देगा।'],
+  ['अच्छा जीवन निष्पादन', 'जीवन सामान्य रूप से प्रगतिशील है, परंतु कुछ आयामों पर ध्यान देने की आवश्यकता है।'],
+  ['औसत जीवन निष्पादन', 'कई आयामों में असंतुलन है। स्वास्थ्य, करियर या संबंधों में से कुछ क्षेत्र सुधार की मांग करते हैं।'],
+  ['औसत से कम', 'जीवन के कई क्षेत्रों में संघर्ष है। सचेत प्रयास, दिनचर्या में सुधार और मार्गदर्शन की आवश्यकता है।'],
+  ['कमजोर जीवन निष्पादन', 'अधिकांश आयामों में कठिनाइयाँ हैं। जीवनशैली में बड़े परिवर्तन और नियमित मार्गदर्शन आवश्यक है।'],
+  ['गंभीर असंतुलन', 'जीवन अनेक संकटों और अभावों से घिरा है। शीघ्र परामर्श और उपचारात्मक उपायों की आवश्यकता है।'],
+  ['अत्यंत गंभीर स्थिति', 'जीवन के लगभग सभी क्षेत्र प्रभावित हैं। तत्काल विशेषज्ञ परामर्श और समग्र उपचार अनिवार्य है।']
+];
+function bandIndex(score) {
+  if (score == null || isNaN(score)) return -1;
+  const s = Math.round(Number(score));
+  return BAND_RANGES.findIndex(r => s >= r[1] && s <= r[2]);
+}
+const PAGE_BOTTOM_LIMIT = 787; // stay clear of the footer line
+
+function ensureSpace(doc, needed) {
+  if (doc.y + needed > PAGE_BOTTOM_LIMIT) newPage(doc);
+}
+
+/** Small section heading in the report's accent colour. */
+function drawHeading(doc, text) {
+  ensureSpace(doc, 30);
+  doc.fontSize(11.5).fillColor('#B0522B').text(text, PAGE_LEFT, doc.y, { width: PAGE_WIDTH_CONTENT });
+  doc.moveDown(0.3);
+  doc.fillColor(INK);
+}
+
+/** Horizontal bar per CEI pillar: code + Hindi name | bar | "4/10". */
+function drawPillarBars(doc, components) {
+  const labelW = 130, valueW = 44, gap = 10, barH = 11, rowH = 21;
+  const barX = PAGE_LEFT + labelW + gap, barW = PAGE_WIDTH_CONTENT - labelW - valueW - gap * 2;
+  ensureSpace(doc, rowH * CEI_FACTOR_ORDER.length);
+  CEI_FACTOR_ORDER.forEach(key => {
+    const v = components[key];
+    const val = (v == null || isNaN(v)) ? 0 : Math.max(0, Math.min(10, Number(v)));
+    const y = doc.y;
+    doc.fontSize(9.5).fillColor(MAROON).text(key, PAGE_LEFT, y, { width: 28, lineBreak: false });
+    doc.fillColor(INK).text(CEI_FACTOR_NAMES[key], PAGE_LEFT + 28, y, { width: labelW - 28, lineBreak: false });
+    const by = y + 3;
+    doc.roundedRect(barX, by, barW, barH, barH / 2).fill('#F3EAD6');
+    if (val > 0) doc.roundedRect(barX, by, Math.max(barH, barW * val / 10), barH, barH / 2).fill(GOLD);
+    doc.fontSize(11).fillColor(MAROON).text(v == null ? '—' : String(v), barX + barW + gap, y - 1, { width: 22, align: 'right', lineBreak: false });
+    doc.fontSize(8).fillColor('#888888').text('/10', barX + barW + gap + 23, y + 2, { width: 22, lineBreak: false });
+    doc.y = y + rowH;
+  });
+  doc.x = PAGE_LEFT;
+  doc.fillColor(INK);
+}
+
+/** Cream box with the formula (small) and the solved formula (large). */
+function drawSolvedFormula(doc, formula, solved) {
+  const pad = 10, w = PAGE_WIDTH_CONTENT;
+  doc.fontSize(9);
+  const h1 = doc.heightOfString(formula, { width: w - pad * 2, align: 'center' });
+  doc.fontSize(12.5);
+  const h2 = doc.heightOfString(solved, { width: w - pad * 2, align: 'center' });
+  const boxH = h1 + h2 + pad * 2 + 4;
+  ensureSpace(doc, boxH + 10);
+  const y = doc.y;
+  doc.roundedRect(PAGE_LEFT, y, w, boxH, 5).fillAndStroke(CREAM, '#E8D3A2');
+  doc.fillColor('#555555').fontSize(9).text(formula, PAGE_LEFT + pad, y + pad, { width: w - pad * 2, align: 'center' });
+  doc.fillColor(MAROON).fontSize(12.5).text(solved, PAGE_LEFT + pad, doc.y + 4, { width: w - pad * 2, align: 'center' });
+  doc.y = y + boxH + 12;
+  doc.fillColor(INK);
+}
+
+/** Score ring (arc proportional to score/90) + category text beside it. */
+function drawScoreRing(doc, score, bandIdx, catText) {
+  const r = 34, ringW = 8, blockH = r * 2 + 8;
+  ensureSpace(doc, blockH + 6);
+  const cx = PAGE_LEFT + PAGE_WIDTH_CONTENT / 2 - 70, cy = doc.y + r + 2;
+  const color = bandIdx >= 0 ? BAND_COLORS[bandIdx] : '#999999';
+  doc.save();
+  doc.lineWidth(ringW).strokeColor('#F1E6CF').circle(cx, cy, r).stroke();
+  const frac = Math.max(0, Math.min(0.9999, (Number(score) || 0) / 90));
+  if (frac > 0) {
+    const a = frac * 2 * Math.PI;
+    const x = cx + r * Math.sin(a), y = cy - r * Math.cos(a);
+    doc.path(`M ${cx} ${cy - r} A ${r} ${r} 0 ${frac > 0.5 ? 1 : 0} 1 ${x} ${y}`).lineWidth(ringW).strokeColor(color).stroke();
+  }
+  doc.restore();
+  doc.fontSize(20).fillColor(MAROON).text(score == null ? '—' : String(score), cx - r, cy - 16, { width: r * 2, align: 'center', lineBreak: false });
+  doc.fontSize(8).fillColor('#888888').text('/ 90', cx - r, cy + 8, { width: r * 2, align: 'center', lineBreak: false });
+  const tx = cx + r + 22;
+  doc.fontSize(8.5).fillColor('#888888').text('वर्गीकरण', tx, cy - 26, { width: 230, lineBreak: false });
+  doc.fontSize(14).fillColor(color).text(catText, tx, cy - 13, { width: 240, lineBreak: false });
+  if (bandIdx >= 0) doc.fontSize(8.5).fillColor('#888888').text(`(${BAND_RANGES[bandIdx][0]})`, tx, cy + 8, { width: 230, lineBreak: false });
+  doc.x = PAGE_LEFT;
+  doc.y = cy + r + 14;
+  doc.fillColor(INK);
+}
+
+/** 8-range classification chart (range | category | meaning), the person's range highlighted. */
+function drawBandChart(doc, title, bands, bandIdx) {
+  drawHeading(doc, title);
+  const cols = [70, 125, 320], pad = 5, x0 = PAGE_LEFT;
+  const header = ['अंक सीमा', 'श्रेणी', 'अर्थ'];
+  // header
+  doc.fontSize(8.5);
+  let hH = 18;
+  ensureSpace(doc, hH + 30);
+  let y = doc.y;
+  doc.rect(x0, y, PAGE_WIDTH_CONTENT, hH).fill(GOLD);
+  let x = x0;
+  header.forEach((t, i) => { doc.fillColor('#FFFFFF').text(t, x + pad, y + 4, { width: cols[i] - pad * 2, lineBreak: false }); x += cols[i]; });
+  doc.y = y + hH;
+  bands.forEach((b, i) => {
+    const hit = i === bandIdx;
+    const catLabel = b[0] + (hit ? '  (आप यहाँ)' : '');
+    doc.fontSize(8.3);
+    const h = Math.max(
+      doc.heightOfString(catLabel, { width: cols[1] - pad * 2 }),
+      doc.heightOfString(b[1], { width: cols[2] - pad * 2 })
+    ) + pad * 2;
+    ensureSpace(doc, h);
+    y = doc.y;
+    doc.rect(x0, y, PAGE_WIDTH_CONTENT, h).fill(hit ? '#FFF3D6' : '#FFFFFF');
+    doc.save().lineWidth(hit ? 1.2 : 0.5).strokeColor(hit ? BAND_COLORS[i] : '#EFE5CF')
+      .moveTo(x0, y + h).lineTo(x0 + PAGE_WIDTH_CONTENT, y + h).stroke().restore();
+    if (hit) doc.save().lineWidth(1.2).strokeColor(BAND_COLORS[i]).moveTo(x0, y).lineTo(x0 + PAGE_WIDTH_CONTENT, y).stroke().restore();
+    doc.circle(x0 + pad + 3.5, y + pad + 5.5, 3.2).fill(BAND_COLORS[i]);
+    doc.fillColor(INK).fontSize(8.3).text(BAND_RANGES[i][0], x0 + pad + 10, y + pad, { width: cols[0] - pad * 2 - 10, lineBreak: false });
+    doc.fillColor(hit ? BAND_COLORS[i] : '#5A4630').text(catLabel, x0 + cols[0] + pad, y + pad, { width: cols[1] - pad * 2 });
+    doc.fillColor(INK).text(b[1], x0 + cols[0] + cols[1] + pad, y + pad, { width: cols[2] - pad * 2 });
+    doc.y = y + h;
+  });
+  doc.x = PAGE_LEFT;
+  doc.moveDown(0.6);
+  doc.fillColor(INK);
+}
+
+/** CEI page 1: logo, title, name, intro, formula box, 9-pillar bar chart. */
+function renderCeiSummaryCover(doc, content, headerInfo, components) {
+  doc.y = 34;
+  if (HAS_LOGO) {
+    const logoY = doc.y, logoW = 118, logoH = logoW * (1130 / 1214);
+    try { doc.image(REPORT_LOGO_PATH, (doc.page.width - logoW) / 2, logoY, { width: logoW }); doc.y = logoY + logoH + 4; } catch (e) { doc.y = 60; }
+  } else doc.y = 60;
+  doc.fontSize(19).fillColor(MAROON).font('Devanagari').text(content.title, PAGE_LEFT, doc.y, { width: PAGE_WIDTH_CONTENT, align: 'center' });
+  if (content.subtitle) doc.fontSize(10).fillColor(INK).text(content.subtitle, PAGE_LEFT, doc.y + 2, { width: PAGE_WIDTH_CONTENT, align: 'center' });
+  doc.moveDown(0.4);
+  doc.save().strokeColor(GOLD).lineWidth(1).moveTo(PAGE_LEFT, doc.y).lineTo(PAGE_LEFT + PAGE_WIDTH_CONTENT, doc.y).stroke().restore();
+  doc.moveDown(0.4);
+  if (headerInfo && headerInfo.name) {
+    doc.fontSize(11).fillColor(MAROON).text(`${headerInfo.name} — रिपोर्ट`, PAGE_LEFT, doc.y, { width: PAGE_WIDTH_CONTENT, align: 'center' });
+    doc.fontSize(9).fillColor(INK).text(
+      `DOB: ${headerInfo.dobStr}   |   Time: ${headerInfo.timeOfBirth || 'N/A'}   |   Place: ${headerInfo.place || 'N/A'}`,
+      PAGE_LEFT, doc.y, { width: PAGE_WIDTH_CONTENT, align: 'center' });
+    doc.moveDown(0.5);
+  }
+  drawParagraph(doc, content.intro, { fontSize: 9 });
+  if (content.formula) drawFormulaBox(doc, content.formula, content.formulaNote);
+  drawHeading(doc, 'नौ ऊर्जा स्तंभ — प्राप्त अंक');
+  drawPillarBars(doc, components);
+}
+
+/** CEI page 2: marks table, solved formula, score ring, CEI range chart. */
+function renderCeiResultPage(doc, conclusionContent, { components, EL, cei }) {
+  newPage(doc);
+  drawTitle(doc, conclusionContent.title || 'कॉस्मिक ऊर्जा सूचकांक (CEI) : अंतिम विश्लेषण एवं वर्गीकरण');
+  const rows = CEI_FACTOR_ORDER.map(k => [k, CEI_FACTOR_NAMES[k], '10', components[k] == null ? '—' : String(components[k])]);
+  rows.push(['EL', 'ऊर्जा हानि (Energy Loss)', '—', `−${EL || 0}`]);
+  drawCriteriaTable(doc, {
+    headerRow: ['सूत्र', 'मानक', 'अधिकतम अंक', 'प्राप्त अंक'],
+    rows,
+    totalRow: ['CEI', 'कुल प्राप्तांक', '90', cei == null ? '—' : String(cei)],
+    colWidths: [55, 260, 100, 100]
+  });
+  const solved = 'CEI = ' + CEI_FACTOR_ORDER.map(k => components[k] == null ? '0' : String(components[k])).join(' + ') +
+    ` − ${EL || 0} = ${cei == null ? '—' : cei} / 90`;
+  drawSolvedFormula(doc, 'CEI = L + S + M + SB + AV + N + D9 + H + P − EL', solved);
+  const bi = bandIndex(cei);
+  drawScoreRing(doc, cei, bi, bi >= 0 ? CEI_BANDS[bi][0] : '—');
+  drawBandChart(doc, 'CEI वर्गीकरण तालिका (Cosmic Energy Index)', CEI_BANDS, bi);
+}
+
+/** Last page: solved LPI, LPI range chart, both results side by side, conclusion, note. */
+function renderLpiFinalPage(doc, { lpiDomains, lpi, cei }) {
+  newPage(doc);
+  drawTitle(doc, 'जीवन निष्पादन सूचकांक (LPI) : अंतिम वर्गीकरण');
+  const parts = LPI_DOMAIN_ORDER.map(k => (lpiDomains[k] && lpiDomains[k].score != null) ? String(lpiDomains[k].score) : '—');
+  drawSolvedFormula(doc, 'LPI = (1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9)',
+    lpi == null ? 'LPI = लंबित (प्रश्नावली अभी भरी नहीं गई)' : `LPI = ${parts.join(' + ')} = ${lpi} / 90`);
+  const li = bandIndex(lpi), ci = bandIndex(cei);
+  drawBandChart(doc, 'LPI वर्गीकरण तालिका (Life Performance Index)', LPI_BANDS, li);
+
+  // Both results side by side
+  drawHeading(doc, 'आपका समग्र परिणाम');
+  const boxW = (PAGE_WIDTH_CONTENT - 14) / 2, boxH = 72;
+  ensureSpace(doc, boxH + 10);
+  const y = doc.y;
+  [[0, 'कॉस्मिक ऊर्जा सूचकांक (CEI)', cei, ci, CEI_BANDS], [1, 'जीवन निष्पादन सूचकांक (LPI)', lpi, li, LPI_BANDS]].forEach(([i, label, sc, bi, bands]) => {
+    const x = PAGE_LEFT + i * (boxW + 14);
+    const col = bi >= 0 ? BAND_COLORS[bi] : '#999999';
+    doc.roundedRect(x, y, boxW, boxH, 5).fillAndStroke('#FFFBF0', '#E8D3A2');
+    doc.fontSize(8.5).fillColor('#777777').text(label, x, y + 8, { width: boxW, align: 'center', lineBreak: false });
+    doc.fontSize(20).fillColor(col).text(sc == null ? 'लंबित' : `${sc} / 90`, x, y + 22, { width: boxW, align: 'center', lineBreak: false });
+    doc.fontSize(10.5).fillColor(col).text(bi >= 0 ? bands[bi][0] : '—', x, y + 50, { width: boxW, align: 'center', lineBreak: false });
+  });
+  doc.x = PAGE_LEFT;
+  doc.y = y + boxH + 14;
+
+  drawHeading(doc, 'निष्कर्ष');
+  drawParagraph(doc, 'CEI जातक की आंतरिक, सूक्ष्म और खगोलीय ऊर्जा का सूचक है, जबकि LPI उसके प्रत्यक्ष, व्यावहारिक जीवन के प्रदर्शन का आईना है। दोनों सूचकांकों को साथ देखने से जातक के संपूर्ण अस्तित्व का यथार्थवादी चित्र प्राप्त होता है। जीवन की सच्ची पूर्णता तभी संभव है जब आंतरिक कॉस्मिक ऊर्जा और बाहरी व्यावहारिक जीवनशैली के बीच पूर्ण सामंजस्य स्थापित हो।', { fontSize: 9 });
+  ensureSpace(doc, 30);
+  doc.fontSize(7.5).fillColor('#777777').text(
+    'नोट: CEI पूर्णतः जन्म कुंडली से निकाला जाता है, इसलिए यह किसी भी शोधकर्ता द्वारा भरने पर नहीं बदलता। LPI शोधकर्ता के व्यक्तिगत आकलन पर आधारित है, इसलिए भरने वाले व्यक्ति के अनुसार इसमें लगभग 10% तक का अंतर आ सकता है।',
+    PAGE_LEFT, doc.y, { width: PAGE_WIDTH_CONTENT });
+  doc.fillColor(INK);
+}
+
 const CEI_FACTOR_ORDER = ['L', 'S', 'M', 'SB', 'AV', 'N', 'D9', 'H', 'P'];
 const LPI_DOMAIN_ORDER = LPI_DOMAINS.map(d => d.key);
 
@@ -299,7 +550,7 @@ function generateCeiLpiPdf(res, { name, dateOfBirth, timeOfBirth, location, scor
   // on its own (e.g. a long closing paragraph overflowing a page) --
   // not just pages created via our explicit newPage() helper.
   doc.on('pageAdded', () => drawPageChrome(doc));
-  drawPageChrome(doc); // the very first page doesn't fire 'pageAdded'
+  drawPageChrome(doc, { isCover: true }); // the very first page doesn't fire 'pageAdded'; it carries the big logo instead
 
   const sd = scoringDetails || {};
   const ceiGrade = sd.ceiGrade || null;
@@ -307,27 +558,14 @@ function generateCeiLpiPdf(res, { name, dateOfBirth, timeOfBirth, location, scor
   const dobStr = dateOfBirth ? new Date(dateOfBirth).toLocaleDateString() : 'N/A';
   const headerInfo = { isFirst: true, name, dobStr, timeOfBirth, place: location && location.city };
 
-  // ================= CEI: 12 pages =================
-  renderCoverPage(doc, CEI_CONTENT.cover, headerInfo);
-
+  // ================= CEI: 2 summary pages =================
+  // (the rule-by-rule working is deliberately NOT printed)
   const ceiComponents = (sd.cei && sd.cei.components) || {};
-  const ceiCriteriaByFactor = (sd.cei && sd.cei.criteriaByFactor) || {};
-  CEI_FACTOR_ORDER.forEach(key => {
-    const content = CEI_CONTENT[key];
-    const criteria = ceiCriteriaByFactor[key] || [];
-    const rows = criteria.map(c => ({ label: c.labelHi || c.labelEn, score: c.score, pending: c.pending }));
-    renderScorePage(doc, content, { rows, score: ceiComponents[key], maxScore: 10, columnLabel: 'प्राप्त अंक' });
-  });
-
-  const elCriteria = ceiCriteriaByFactor.EL || [];
-  renderELPage(doc, CEI_CONTENT.EL, {
-    rows: elCriteria.map(c => ({ label: c.labelHi || c.labelEn, deduction: c.deduction })),
-    EL: sd.cei ? sd.cei.EL : 0
-  });
-
-  renderConclusionPage(doc, CEI_CONTENT.conclusion, {
-    text: `CEI: ${scores.cei ?? 'N/A'}/90 — ${ceiGrade || 'N/A'}`,
-    color: gradeColor(ceiGrade)
+  renderCeiSummaryCover(doc, CEI_CONTENT.cover, headerInfo, ceiComponents);
+  renderCeiResultPage(doc, CEI_CONTENT.conclusion, {
+    components: ceiComponents,
+    EL: sd.cei ? sd.cei.EL : 0,
+    cei: scores.cei
   });
 
   // ================= LPI: 12 pages =================
@@ -342,21 +580,9 @@ function generateCeiLpiPdf(res, { name, dateOfBirth, timeOfBirth, location, scor
     renderScorePage(doc, content, { rows, score, maxScore: 10, columnLabel: 'उत्तर (Answer)', answerStyle: 'yesno' });
   });
 
-  renderComparisonPage(doc, LPI_CONTENT.comparison, COMPARISON_ROWS);
-
-  renderConclusionPage(doc, LPI_CONTENT.conclusion, {
-    text: `LPI: ${scores.lpi ?? 'लंबित (Pending)'}${scores.lpi != null ? '/90' : ''} — ${lpiGrade || (scores.lpi == null ? 'प्रश्नावली लंबित' : 'N/A')}`,
-    color: gradeColor(lpiGrade)
-  });
-
-  // ---- Variability disclaimer (final line of the document) ----
-  doc.moveDown(0.6);
-  doc.fontSize(7.5).fillColor('#777777');
-  doc.text(
-    'नोट: CEI पूर्णतः जन्म कुंडली से निकाला जाता है, इसलिए यह किसी भी शोधकर्ता द्वारा भरने पर नहीं बदलता। LPI शोधकर्ता के व्यक्तिगत आकलन पर आधारित है, इसलिए भरने वाले व्यक्ति के अनुसार इसमें लगभग 10% तक का अंतर आ सकता है।',
-    { width: PAGE_WIDTH_CONTENT }
-  );
-  doc.fillColor(INK);
+  // Final page: LPI range chart + both results + conclusion + note.
+  // (Replaces the old combined CEI/LPI comparison matrix.)
+  renderLpiFinalPage(doc, { lpiDomains, lpi: scores.lpi, cei: scores.cei });
 
   doc.end();
 }
