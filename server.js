@@ -524,6 +524,9 @@ function renderLpiFinalPage(doc, { lpiDomains, lpi, cei }) {
 }
 
 const CEI_FACTOR_ORDER = ['L', 'S', 'M', 'SB', 'AV', 'N', 'D9', 'H', 'P'];
+// true (default) = full detailed 24-page report for the PhD research.
+// Set SHOW_CEI_WORKING=false on Render to go back to the short summary report.
+const SHOW_CEI_WORKING = String(process.env.SHOW_CEI_WORKING || 'true').toLowerCase() !== 'false';
 const LPI_DOMAIN_ORDER = LPI_DOMAINS.map(d => d.key);
 
 /**
@@ -557,6 +560,52 @@ function generateCeiLpiPdf(res, { name, dateOfBirth, timeOfBirth, location, scor
   const lpiGrade = sd.lpiGrade || null;
   const dobStr = dateOfBirth ? new Date(dateOfBirth).toLocaleDateString() : 'N/A';
   const headerInfo = { isFirst: true, name, dobStr, timeOfBirth, place: location && location.city };
+
+  // ===== PhD RESEARCH MODE (default ON): the full 24-page detailed report =====
+  // Exactly the earlier layout — CEI cover, one page per pillar with the
+  // rule-by-rule marks (why L/S/M... got their points), Energy Loss page,
+  // CEI conclusion, then LPI cover, 9 domain pages, comparison and
+  // conclusion. After the research, set SHOW_CEI_WORKING=false on Render
+  // to switch back to the short summary report below (no code change).
+  if (SHOW_CEI_WORKING) {
+    renderCoverPage(doc, CEI_CONTENT.cover, headerInfo);
+    const comps = (sd.cei && sd.cei.components) || {};
+    const byFactor = (sd.cei && sd.cei.criteriaByFactor) || {};
+    CEI_FACTOR_ORDER.forEach(key => {
+      const criteria = byFactor[key] || [];
+      const rows = criteria.map(c => ({ label: c.labelHi || c.labelEn, score: c.score, pending: c.pending }));
+      renderScorePage(doc, CEI_CONTENT[key], { rows, score: comps[key], maxScore: 10, columnLabel: 'प्राप्त अंक' });
+    });
+    renderELPage(doc, CEI_CONTENT.EL, {
+      rows: (byFactor.EL || []).map(c => ({ label: c.labelHi || c.labelEn, deduction: c.deduction || 0 })),
+      EL: sd.cei ? sd.cei.EL : 0
+    });
+    renderConclusionPage(doc, CEI_CONTENT.conclusion, {
+      text: `CEI: ${scores.cei ?? 'N/A'}/90 — ${ceiGrade || 'N/A'}`,
+      color: gradeColor(ceiGrade)
+    });
+
+    renderCoverPage(doc, LPI_CONTENT.cover, { isFirst: false, name, dobStr, timeOfBirth, place: location && location.city });
+    const lpiDoms = (sd.lpi && sd.lpi.domains) || {};
+    LPI_DOMAIN_ORDER.forEach(key => {
+      const domain = lpiDoms[key];
+      const rows = domain ? domain.criteria.map(c => ({ label: c.labelHi || c.labelEn, score: c.score, pending: c.pending })) : [];
+      renderScorePage(doc, LPI_CONTENT[key], { rows, score: domain ? domain.score : null, maxScore: 10, columnLabel: 'उत्तर (Answer)', answerStyle: 'yesno' });
+    });
+    renderComparisonPage(doc, LPI_CONTENT.comparison, COMPARISON_ROWS);
+    renderConclusionPage(doc, LPI_CONTENT.conclusion, {
+      text: `LPI: ${scores.lpi ?? 'लंबित (Pending)'}${scores.lpi != null ? '/90' : ''} — ${lpiGrade || (scores.lpi == null ? 'प्रश्नावली लंबित' : 'N/A')}`,
+      color: gradeColor(lpiGrade)
+    });
+    doc.moveDown(0.6);
+    doc.fontSize(7.5).fillColor('#777777').text(
+      'नोट: CEI पूर्णतः जन्म कुंडली से निकाला जाता है, इसलिए यह किसी भी शोधकर्ता द्वारा भरने पर नहीं बदलता। LPI शोधकर्ता के व्यक्तिगत आकलन पर आधारित है, इसलिए भरने वाले व्यक्ति के अनुसार इसमें लगभग 10% तक का अंतर आ सकता है।',
+      { width: PAGE_WIDTH_CONTENT }
+    );
+    doc.fillColor(INK);
+    doc.end();
+    return;
+  }
 
   // ================= CEI: 2 summary pages =================
   // (the rule-by-rule working is deliberately NOT printed)
